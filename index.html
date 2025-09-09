@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solo Leveling System</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple progress bar style */
+        .progress-bar-container {
+            background-color: #374151; /* gray-700 */
+        }
+        .progress-bar {
+            background-color: #3b82f6; /* blue-500 */
+            transition: width 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 sm:p-6 md:p-8">
+
+    <!-- This script is required to run Go WASM -->
+    <script src="wasm_exec.js"></script>
+
+    <div id="loading-screen" class="fixed inset-0 bg-gray-900 flex flex-col items-center justify-center z-50">
+        <svg class="animate-spin -ml-1 mr-3 h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p class="mt-4 text-lg">Initializing System...</p>
+    </div>
+
+    <div id="app-content" class="max-w-4xl mx-auto opacity-0 transition-opacity duration-500">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-blue-400 tracking-wider">Solo Leveling System</h1>
+            <p class="text-gray-400 mt-2">Complete your habits, gain XP, and level up your life.</p>
+        </header>
+
+        <!-- Player Stats -->
+        <section class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Player Status</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="bg-gray-700 p-4 rounded-lg text-center">
+                    <p class="text-sm text-gray-400">LEVEL</p>
+                    <p id="player-level" class="text-2xl font-bold">1</p>
+                </div>
+                <div class="col-span-2 md:col-span-3 bg-gray-700 p-4 rounded-lg">
+                    <div class="flex justify-between items-center mb-1">
+                        <p class="text-sm text-gray-400">EXPERIENCE</p>
+                        <p id="player-xp-text" class="text-sm font-medium">0 / 100</p>
+                    </div>
+                    <div class="w-full progress-bar-container rounded-full h-4">
+                        <div id="player-xp-bar" class="progress-bar h-4 rounded-full" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-3 gap-4 mt-4">
+                <div class="bg-gray-700 p-4 rounded-lg text-center">
+                    <p class="text-sm text-gray-400">STRENGTH</p>
+                    <p id="player-strength" class="text-2xl font-bold">1</p>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg text-center">
+                    <p class="text-sm text-gray-400">INTELLIGENCE</p>
+                    <p id="player-intelligence" class="text-2xl font-bold">1</p>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg text-center">
+                    <p class="text-sm text-gray-400">DEXTERITY</p>
+                    <p id="player-dexterity" class="text-2xl font-bold">1</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Habits / Quest Log -->
+        <section>
+            <h2 class="text-2xl font-semibold mb-4">Habit Quest Log</h2>
+            <form id="add-habit-form" class="flex gap-2 mb-4">
+                <input type="text" id="habit-input" placeholder="Enter a new habit (e.g., 'Workout for 30 mins')" class="flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Add</button>
+            </form>
+            <div id="habits-list" class="space-y-3">
+                <!-- Habits will be dynamically inserted here -->
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // Main function to initialize and run the WASM module
+        async function initWasm() {
+            const go = new Go();
+            try {
+                const result = await WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject);
+                go.run(result.instance);
+            } catch (error) {
+                console.error("Error loading WASM:", error);
+                const loadingScreen = document.getElementById('loading-screen');
+                loadingScreen.innerHTML = '<p class="text-red-500 text-lg">Failed to load system. Please check console for errors.</p>';
+                return; // Stop execution if WASM fails to load
+            }
+
+            // Load saved data from localStorage or get initial state
+            const savedData = localStorage.getItem('soloLevelingData');
+            let initialPlayerData;
+            if (savedData) {
+                console.log("Found saved data. Loading...");
+                initialPlayerData = JSON.parse(loadPlayerData(savedData));
+            } else {
+                console.log("No saved data found. Initializing new player.");
+                initialPlayerData = JSON.parse(getPlayerData());
+            }
+            
+            updateUI(initialPlayerData);
+            
+            // Hide loading screen and show app content
+            document.getElementById('loading-screen').style.display = 'none';
+            document.getElementById('app-content').classList.remove('opacity-0');
+        }
+
+        // Function to update the entire UI with new player data
+        function updateUI(playerData) {
+            if (!playerData) {
+                 console.error("updateUI called with invalid data");
+                 return;
+            }
+            // Update stats
+            document.getElementById('player-level').textContent = playerData.level;
+            document.getElementById('player-xp-text').textContent = `${playerData.xp} / ${playerData.xpToNextLevel}`;
+            const xpPercentage = (playerData.xp / playerData.xpToNextLevel) * 100;
+            document.getElementById('player-xp-bar').style.width = `${Math.min(xpPercentage, 100)}%`;
+            document.getElementById('player-strength').textContent = playerData.strength;
+            document.getElementById('player-intelligence').textContent = playerData.intelligence;
+            document.getElementById('player-dexterity').textContent = playerData.dexterity;
+
+            // Update habits list
+            const habitsList = document.getElementById('habits-list');
+            habitsList.innerHTML = ''; // Clear existing list
+
+            if (playerData.habits && playerData.habits.length > 0) {
+                 playerData.habits.forEach((habit, index) => {
+                    const habitElement = document.createElement('div');
+                    habitElement.className = 'bg-gray-800 p-4 rounded-lg flex justify-between items-center shadow';
+                    habitElement.innerHTML = `
+                        <div>
+                            <p class="font-medium">${habit.name}</p>
+                            <p class="text-sm text-green-400">+${habit.xpValue} XP</p>
+                        </div>
+                        <button data-index="${index}" class="complete-btn bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors">Complete</button>
+                    `;
+                    habitsList.appendChild(habitElement);
+                });
+            } else {
+                 habitsList.innerHTML = '<p class="text-gray-500 text-center py-4">No active habits. Add one to begin your journey!</p>';
+            }
+            
+            // Save the new state to localStorage
+            saveState(playerData);
+        }
+        
+        // Function to save player state
+        function saveState(playerData) {
+            localStorage.setItem('soloLevelingData', JSON.stringify(playerData));
+        }
+
+        // --- Event Listeners ---
+
+        // Add Habit Form Submission
+        document.getElementById('add-habit-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const input = document.getElementById('habit-input');
+            const habitName = input.value.trim();
+            if (habitName) {
+                // Call the Go function
+                const updatedPlayerData = JSON.parse(addHabit(habitName));
+                updateUI(updatedPlayerData);
+                input.value = ''; // Clear input
+            }
+        });
+
+        // Complete Habit Button Clicks (using event delegation)
+        document.getElementById('habits-list').addEventListener('click', (e) => {
+            if (e.target && e.target.classList.contains('complete-btn')) {
+                const index = parseInt(e.target.getAttribute('data-index'), 10);
+                 // Call the Go function
+                const updatedPlayerData = JSON.parse(completeHabit(index));
+                updateUI(updatedPlayerData);
+            }
+        });
+
+        // Start the application
+        initWasm();
+    </script>
+</body>
+</html>
