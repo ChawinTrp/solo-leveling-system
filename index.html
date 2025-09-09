@@ -40,19 +40,20 @@
     <div id="app-content" class="max-w-4xl mx-auto opacity-0 transition-opacity duration-500">
         <!-- Header -->
         <header class="text-center mb-8">
-            <h1 class="text-4xl font-bold text-blue-400 tracking-wider">Solo Leveling System</h1>
+            <h1 class="text-3xl sm:text-4xl font-bold text-blue-400 tracking-wider">Solo Leveling System</h1>
             <p class="text-gray-400 mt-2">Complete your habits, gain XP, and level up your life.</p>
         </header>
 
         <!-- Player Stats -->
         <section class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
             <h2 class="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Player Status</h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <!-- Updated for Mobile: Stacks vertically on small screens -->
+            <div class="flex flex-col sm:flex-row gap-4">
                 <div class="bg-gray-700 p-4 rounded-lg text-center">
                     <p class="text-sm text-gray-400">LEVEL</p>
                     <p id="player-level" class="text-2xl font-bold">1</p>
                 </div>
-                <div class="col-span-2 md:col-span-3 bg-gray-700 p-4 rounded-lg">
+                <div class="flex-grow bg-gray-700 p-4 rounded-lg">
                     <div class="flex justify-between items-center mb-1">
                         <p class="text-sm text-gray-400">EXPERIENCE</p>
                         <p id="player-xp-text" class="text-sm font-medium">0 / 100</p>
@@ -81,9 +82,10 @@
         <!-- Habits / Quest Log -->
         <section>
             <h2 class="text-2xl font-semibold mb-4">Habit Quest Log</h2>
-            <form id="add-habit-form" class="flex gap-2 mb-4">
-                <input type="text" id="habit-input" placeholder="Enter a new habit (e.g., 'Workout for 30 mins')" class="flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
-                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Add</button>
+            <!-- Updated for Mobile: Stacks vertically on small screens -->
+            <form id="add-habit-form" class="flex flex-col sm:flex-row gap-2 mb-4">
+                <input type="text" id="habit-input" placeholder="Enter a new habit (e.g., 'Workout for 30 mins')" class="w-full flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
+                <button type="submit" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Add</button>
             </form>
             <div id="habits-list" class="space-y-3">
                 <!-- Habits will be dynamically inserted here -->
@@ -151,7 +153,7 @@
                             <p class="font-medium">${habit.name}</p>
                             <p class="text-sm text-green-400">+${habit.xpValue} XP</p>
                         </div>
-                        <button data-index="${index}" class="complete-btn bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors">Complete</button>
+                        <button data-index="${index}" class="complete-btn bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors flex-shrink-0 ml-2">Complete</button>
                     `;
                     habitsList.appendChild(habitElement);
                 });
@@ -198,3 +200,4 @@
     </script>
 </body>
 </html>
+
