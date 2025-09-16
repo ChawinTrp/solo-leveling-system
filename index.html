@@ -23,15 +23,14 @@
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-        // --- PASTE YOUR FIREBASE CONFIGURATION OBJECT HERE ---
         const firebaseConfig = {
-            apiKey: "...",
-            authDomain: "...",
-            projectId: "...",
-            storageBucket: "...",
-            messagingSenderId: "...",
-            appId: "..."
-        };
+            apiKey: "AIzaSyA9obsiqbcY5CcTbFrnExdSuoC9oJR10hA",
+            authDomain: "leveling-system-81768.firebaseapp.com",
+            projectId: "leveling-system-81768",
+            storageBucket: "leveling-system-81768.firebasestorage.app",
+            messagingSenderId: "124609028946",
+            appId: "1:124609028946:web:594b2a2921a52037dfd08b"
+            };
 
         // --- GLOBAL VARIABLES ---
         let db, auth, userId;
@@ -42,15 +41,12 @@
             auth = getAuth(app);
             db = getFirestore(app);
 
-            // Listen for authentication state changes
             onAuthStateChanged(auth, async (user) => {
                 if (user) {
-                    // User is signed in anonymously.
                     userId = user.uid;
                     console.log("User signed in with UID:", userId);
                     await initWasm();
                 } else {
-                    // User is signed out.
                     console.log("User is not signed in. Signing in anonymously...");
                     signInAnonymously(auth).catch((error) => {
                         console.error("Anonymous sign-in failed:", error);
@@ -72,18 +68,15 @@
                 return;
             }
 
-            // Load saved data from FIRESTORE or get initial state
             const docRef = doc(db, "users", userId);
             const docSnap = await getDoc(docRef);
 
             let initialPlayerData;
             if (docSnap.exists()) {
                 console.log("Found Firestore data. Loading...");
-                // Pass the saved JSON data to our Go function
                 initialPlayerData = JSON.parse(loadPlayerData(JSON.stringify(docSnap.data())));
             } else {
                 console.log("No Firestore data found. Initializing new player.");
-                // Get the default state from our Go function
                 initialPlayerData = JSON.parse(getPlayerData());
             }
             
@@ -95,7 +88,8 @@
 
         // --- UI & DATA FUNCTIONS ---
         window.updateUI = function(playerData) {
-             if (!playerData) return;
+            if (!playerData) return;
+            // Update stats
             document.getElementById('player-level').textContent = playerData.level;
             document.getElementById('player-xp-text').textContent = `${playerData.xp} / ${playerData.xpToNextLevel}`;
             document.getElementById('player-xp-bar').style.width = `${Math.min((playerData.xp / playerData.xpToNextLevel) * 100, 100)}%`;
@@ -103,6 +97,7 @@
             document.getElementById('player-intelligence').textContent = playerData.intelligence;
             document.getElementById('player-dexterity').textContent = playerData.dexterity;
 
+            // Update habits list
             const habitsList = document.getElementById('habits-list');
             habitsList.innerHTML = '';
             if (playerData.habits && playerData.habits.length > 0) {
@@ -121,8 +116,26 @@
             } else {
                  habitsList.innerHTML = '<p class="text-gray-500 text-center py-4">No active habits. Add one to begin your journey!</p>';
             }
+
+            // --- NEW: Update History Log ---
+            const historyLog = document.getElementById('history-log');
+            const historyToggleButton = document.getElementById('toggle-history-btn');
+            historyLog.innerHTML = ''; // Clear old log
+            if (playerData.history && playerData.history.length > 0) {
+                historyToggleButton.classList.remove('hidden'); // Show button if history exists
+                playerData.history.forEach(entry => {
+                    const logEntry = document.createElement('div');
+                    logEntry.className = 'bg-gray-800 p-3 rounded-lg flex justify-between items-center text-sm';
+                    logEntry.innerHTML = `
+                        <p>${entry.name}</p>
+                        <p class="text-gray-400">${entry.completedAt}</p>
+                    `;
+                    historyLog.appendChild(logEntry);
+                });
+            } else {
+                historyToggleButton.classList.add('hidden'); // Hide button if no history
+            }
             
-            // Save the new state to FIRESTORE
             saveStateToFirestore(playerData);
         }
         
@@ -132,7 +145,6 @@
                 return;
             }
             try {
-                // We save the entire player object to a document named after the user's ID
                 await setDoc(doc(db, "users", userId), playerData);
             } catch (e) {
                 console.error("Error saving to Firestore: ", e);
@@ -159,11 +171,23 @@
             }
         });
 
+        // --- NEW: Event Listener for History Toggle ---
+        document.getElementById('toggle-history-btn').addEventListener('click', () => {
+            const historyLog = document.getElementById('history-log');
+            const btn = document.getElementById('toggle-history-btn');
+            historyLog.classList.toggle('hidden');
+            if (historyLog.classList.contains('hidden')) {
+                btn.textContent = 'Show History';
+            } else {
+                btn.textContent = 'Hide History';
+            }
+        });
+
         // Start the application
         main();
     </script>
     
-    <!-- App Content (No changes needed below) -->
+    <!-- App Content -->
     <div id="loading-screen" class="fixed inset-0 bg-gray-900 flex flex-col items-center justify-center z-50">
         <svg class="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
         <p class="mt-4 text-lg">Authenticating & Loading System...</p>
@@ -173,7 +197,9 @@
             <h1 class="text-3xl sm:text-4xl font-bold text-blue-400 tracking-wider">Solo Leveling System</h1>
             <p class="text-gray-400 mt-2">Complete your habits, gain XP, and level up your life.</p>
         </header>
+
         <section class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
+            <!-- ... (Player Status HTML - no changes) ... -->
             <h2 class="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Player Status</h2>
             <div class="flex flex-col sm:flex-row gap-4">
                 <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">LEVEL</p><p id="player-level" class="text-2xl font-bold">1</p></div>
@@ -188,13 +214,25 @@
                 <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">DEXTERITY</p><p id="player-dexterity" class="text-2xl font-bold">1</p></div>
             </div>
         </section>
+
         <section>
             <h2 class="text-2xl font-semibold mb-4">Habit Quest Log</h2>
+            <!-- ... (Add Habit Form HTML - no changes) ... -->
             <form id="add-habit-form" class="flex flex-col sm:flex-row gap-2 mb-4">
                 <input type="text" id="habit-input" placeholder="Enter a new habit..." class="w-full flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
                 <button type="submit" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Add</button>
             </form>
             <div id="habits-list" class="space-y-3"></div>
+        </section>
+
+        <!-- NEW: History Log Section -->
+        <section class="mt-8">
+            <div class="text-center">
+                 <button id="toggle-history-btn" class="hidden bg-gray-700 hover:bg-gray-600 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Show History</button>
+            </div>
+            <div id="history-log" class="hidden space-y-2 mt-4 max-h-80 overflow-y-auto">
+                <!-- History entries will be dynamically inserted here -->
+            </div>
         </section>
     </div>
 </body>
