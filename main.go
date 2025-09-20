@@ -95,8 +95,18 @@ func completeHabit(this js.Value, args []js.Value) interface{} {
 		Name:        habit.Name,
 		CompletedAt: time.Now().Format("02 Jan 2006 15:04"), // User-friendly timestamp
 	}
-	// Prepend to history so newest is on top
+	// --- DEBUGGING BLOCK START ---
+	fmt.Printf("[Go DEBUG] History BEFORE append: %d items\n", len(player.History))
+	fmt.Printf("[Go DEBUG] Adding entry to history: %+v\n", historyEntry) // %+v prints struct with field names
+
+	// This is the line we are testing
 	player.History = append([]HistoryEntry{historyEntry}, player.History...)
+
+	fmt.Printf("[Go DEBUG] History AFTER append: %d items\n", len(player.History))
+	if len(player.History) > 0 {
+		fmt.Printf("[Go DEBUG] Newest history entry is now: %+v\n", player.History[0])
+	}
+	// --- DEBUGGING BLOCK END ---
 
 	// Remove habit from the active list
 	player.Habits = append(player.Habits[:index], player.Habits[index+1:]...)
