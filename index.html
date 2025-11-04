@@ -3,235 +3,483 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Solo Leveling System</title>
+    <title>Aura - Mastery Tracker</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .progress-bar-container { background-color: #374151; }
-        .progress-bar { background-color: #3b82f6; transition: width 0.3s ease-in-out; }
-    </style>
-</head>
-<body class="bg-gray-900 text-white min-h-screen p-4 sm:p-6 md:p-8">
-
     <script src="wasm_exec.js"></script>
-
-    <!-- Firebase SDKs -->
+    <!-- Firebase Libraries -->
     <script type="module">
-        // Import the functions you need from the SDKs
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- PASTE YOUR FIREBASE CONFIGURATION OBJECT HERE ---
+        // --- Configs (Filled by environment) ---
+        // const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const firebaseConfig = {
-  apiKey: "AIzaSyA9obsiqbcY5CcTbFrnExdSuoC9oJR10hA",
-  authDomain: "leveling-system-81768.firebaseapp.com",
-  projectId: "leveling-system-81768",
-  storageBucket: "leveling-system-81768.firebasestorage.app",
-  messagingSenderId: "124609028946",
-  appId: "1:124609028946:web:594b2a2921a52037dfd08b"
-};
-        // --- GLOBAL VARIABLES ---
+            apiKey: "AIzaSyA9obsiqbcY5CcTbFrnExdSuoC9oJR10hA",
+            authDomain: "leveling-system-81768.firebaseapp.com",
+            projectId: "leveling-system-81768",
+            storageBucket: "leveling-system-81768.firebasestorage.app",
+            messagingSenderId: "124609028946",
+            appId: "1:124609028946:web:594b2a2921a52037dfd08b"
+            };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-aura-app';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- WASM Setup ---
+        // wasm_exec.js is required to run Go WASM
+        // You'll need to serve this file alongside your main.wasm
+        // For development, you can get it from your Go installation: `cp $(go env GOROOT)/misc/wasm/wasm_exec.js .`
+        // In this environment, we assume it's available.
+        if (!WebAssembly.instantiateStreaming) {
+            WebAssembly.instantiateStreaming = async (resp, importObject) => {
+                const source = await (await resp).arrayBuffer();
+                return await WebAssembly.instantiate(source, importObject);
+            };
+        }
+        const go = new Go();
+        let wasmModule;
+        // *** NEW: Create a promise that resolves when Go signals it's ready ***
+        let goReadyResolve;
+        const goReadyPromise = new Promise((resolve) => {
+            goReadyResolve = resolve;
+        });
+        // *** NEW: Attach the resolver to the window so Go can call it ***
+        window.goWasmReady = () => {
+            console.log("Go (WASM) has signaled it is ready.");
+            goReadyResolve();
+        };
+        
+        async function loadWasm() {
+            try {
+                const resp = await fetch('main.wasm?' + new Date().getTime());
+                const result = await WebAssembly.instantiateStreaming(resp, go.importObject);
+                wasmModule = result.module;
+                
+                // Run Go, but don't await this, as it blocks
+                go.run(result.instance); 
+                
+                console.log("WASM Module Loaded, waiting for Go to be ready...");
+                // *** MODIFIED: Now, await the promise that Go will resolve ***
+                await goReadyPromise;
+                return true;
+            } catch (err) {
+                console.error("Error loading WASM:", err);
+                document.getElementById('loading-state').innerText = "Error loading application logic. Please refresh.";
+                return false;
+            }
+        }
+
+
+        // --- App State ---
+        let globalPlayerState = null;
         let db, auth, userId;
+        let playerDocRef;
 
-        // --- CORE LOGIC ---
-        async function main() {
-            const app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
+        // --- Core Functions ---
 
-            onAuthStateChanged(auth, async (user) => {
-                if (user) {
-                    userId = user.uid;
-                    console.log("User signed in with UID:", userId);
-                    await initWasm();
+        /**
+         * Debounce function to prevent rapid Firestore writes.
+         */
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                const context = this;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(context, args), wait);
+            };
+        }
+
+        /**
+         * Saves the entire player state to Firestore.
+         */
+        const saveStateToFirebase = async (state) => {
+            if (!playerDocRef) return;
+            console.log("Saving state to Firebase...");
+            try {
+                // We save the plain JS object
+                await setDoc(playerDocRef, state);
+                console.log("State saved.");
+            } catch (err) {
+                console.error("Error saving state:", err);
+            }
+        };
+        // Create a debounced version of the save function
+        const debouncedSave = debounce(saveStateToFirebase, 1500);
+
+        /**
+         * Calls a Go function, updates global state, re-renders, and saves.
+         * This is the primary "controller" function.
+         */
+        async function callGoLogic(goFunctionName, ...args) {
+            if (typeof window[goFunctionName] !== 'function') {
+                console.error(`${goFunctionName} is not defined on window.`);
+                return;
+            }
+            try {
+                // 1. Call Go logic engine
+                const newStateJson = window[goFunctionName](...args);
+                
+                // 2. Update local state
+                if (newStateJson) {
+                    globalPlayerState = JSON.parse(newStateJson);
                 } else {
-                    console.log("User is not signed in. Signing in anonymously...");
-                    signInAnonymously(auth).catch((error) => {
-                        console.error("Anonymous sign-in failed:", error);
-                        document.getElementById('loading-screen').innerHTML = '<p class="text-red-500 text-lg">Authentication Failed. Cannot save data.</p>';
-                    });
+                    console.warn("Go function returned no state.");
+                    return;
+                }
+                
+                // 3. Re-render UI
+                renderUI(globalPlayerState);
+                
+                // 4. Save to Firebase (debounced)
+                // Pass the JS object, not the JSON string
+                await debouncedSave(globalPlayerState);
+
+            } catch (err) {
+                console.error(`Error in ${goFunctionName}:`, err);
+            }
+        }
+
+        /**
+         * Main render function. Re-draws the entire UI from the state.
+         */
+        function renderUI(player) {
+            if (!player) return;
+            
+            const classesContainer = document.getElementById('classes-list');
+            const projectsContainer = document.getElementById('projects-list');
+            const classSelects = document.querySelectorAll('.class-select');
+            
+            // --- 1. Clear old UI ---
+            classesContainer.innerHTML = '';
+            projectsContainer.innerHTML = '';
+            
+            // --- 2. Get Classes and Projects ---
+            const classes = player.classes ? Object.values(player.classes) : [];
+            const projects = player.projects ? Object.values(player.projects) : [];
+            
+            // --- 3. Render Classes List (for reference) ---
+            if (classes.length > 0) {
+                classes.forEach(cls => {
+                    const xpPercentage = (cls.xpToNextLevel > 0) ? Math.min(100, (cls.xp / cls.xpToNextLevel) * 100) : 0;
+                    classesContainer.innerHTML += `
+                        <div class="flex items-center space-x-2 p-2 rounded-lg" style="background-color: ${cls.color}20; border: 1px solid ${cls.color};">
+                            <div class="w-4 h-4 rounded-full" style="background-color: ${cls.color};"></div>
+                            <span class="font-bold text-white">${cls.name}</span>
+                            <span class="text-gray-400">Lvl ${cls.level}</span>
+                            <div class="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                                <div class="h-full" style="width: ${xpPercentage}%; background-color: ${cls.color};"></div>
+                            </div>
+                            <span class="text-xs text-gray-500">${cls.xp}/${cls.xpToNextLevel} xp</span>
+                        </div>
+                    `;
+                });
+            } else {
+                classesContainer.innerHTML = `<p class="text-gray-500">No classes created yet. Add one above!</p>`;
+            }
+
+            // --- 4. Populate Class Select Dropdowns ---
+            // Clear existing options first (except placeholder)
+            classSelects.forEach(select => {
+                // Store the current value if one is selected
+                const currentValue = select.value;
+                select.innerHTML = '<option value="">Select a Class</option>';
+                classes.forEach(cls => {
+                    const option = new Option(cls.name, cls.id);
+                    select.add(option);
+                });
+                // Re-select the previous value if it's still valid
+                if (currentValue && classes.some(c => c.id === currentValue)) {
+                    select.value = currentValue;
+                }
+            });
+
+            // --- 5. Sort and Render Projects ---
+            const sortedProjects = projects
+                .filter(p => !p.isArchived)
+                .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+
+            if (sortedProjects.length > 0) {
+                sortedProjects.forEach(project => {
+                    const projectEl = document.createElement('div');
+                    projectEl.className = "bg-gray-800 p-4 rounded-lg shadow-lg";
+                    
+                    const quests = project.quests ? Object.values(project.quests) : [];
+                    const history = project.history ? [...project.history].reverse() : []; // Show most recent first
+
+                    let questsHtml = quests.map(quest => {
+                        const questClass = player.classes[quest.classId];
+                        const color = questClass ? questClass.color : '#888';
+                        return `
+                            <div class="flex items-center space-x-3 p-2 border-l-4 rounded-r-md" style="border-color: ${color}; background-color: ${color}1A;">
+                                <input type="checkbox" class="form-checkbox h-5 w-5 rounded bg-gray-900 border-gray-700 text-indigo-600 focus:ring-indigo-500 complete-quest-btn" 
+                                       data-project-id="${project.id}" data-quest-id="${quest.id}">
+                                <span class="flex-1 text-gray-200">${quest.name}</span>
+                                <span class="text-xs font-medium px-2 py-0.5 rounded" style="background-color: ${color}40; color: ${color};">
+                                    ${questClass ? questClass.name : 'N/A'}
+                                </span>
+                                <span class="text-sm text-gray-400">(${quest.xp} hr)</span>
+                            </div>
+                        `;
+                    }).join('');
+                    if (quests.length === 0) {
+                        questsHtml = `<p class="text-sm text-gray-500 px-2">No active quests.</p>`;
+                    }
+
+                    let historyHtml = history.slice(0, 5).map(entry => { // Show last 5
+                        const entryClass = player.classes[entry.classId];
+                        const color = entryClass ? entryClass.color : '#888';
+                        return `
+                            <div class="flex items-center space-x-3 p-2 opacity-60">
+                                <svg class="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                                <span class="flex-1 text-gray-400 line-through">${entry.questName}</span>
+                                <span class="text-xs font-medium px-2 py-0.5 rounded" style="background-color: ${color}30; color: ${color};">
+                                    ${entryClass ? entryClass.name : 'N/A'}
+                                </span>
+                                <span class="text-sm text-gray-500">(+${entry.xp} xp)</span>
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    projectEl.innerHTML = `
+                        <h2 class="text-xl font-bold text-white mb-3">${project.name}</h2>
+                        
+                        <!-- Add Quest Form -->
+                        <form class="mb-4 add-quest-form" data-project-id="${project.id}">
+                            <div class="flex space-x-2">
+                                <input type="text" name="name" class="flex-1 form-input w-full bg-gray-700 border-gray-600 text-white rounded-md shadow-sm" placeholder="New Quest Name" required>
+                                <select name="classId" class="form-select bg-gray-700 border-gray-600 text-white rounded-md shadow-sm class-select" required>
+                                    <option value="">Select a Class</option>
+                                    ${classes.map(cls => `<option value="${cls.id}">${cls.name}</option>`).join('')}
+                                </select>
+                                <input type="number" name="hours" class="form-input w-20 bg-gray-700 border-gray-600 text-white rounded-md shadow-sm" placeholder="Hrs" min="1" step="1" required>
+                                <button type="submit" class="px-3 py-2 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900">Add</button>
+                            </div>
+                        </form>
+
+                        <!-- Active Quests -->
+                        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-2">Active Quests</h3>
+                        <div class="space-y-2 mb-4">
+                            ${questsHtml}
+                        </div>
+
+                        <!-- History -->
+                        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-2">Recent History</h3>
+                        <div class="space-y-2">
+                            ${historyHtml}
+                        </div>
+                    `;
+                    projectsContainer.appendChild(projectEl);
+                });
+            } else {
+                projectsContainer.innerHTML = `<p class="text-gray-500 text-center">No projects created yet. Add one above!</p>`;
+            }
+        }
+
+        /**
+         * Main application entry point.
+         */
+        async function mainAppLogic() {
+            // 1. Get user document reference
+            playerDocRef = doc(db, 'artifacts', appId, 'users', userId, 'aura', 'playerState');
+
+            // 2. Load WASM
+            const wasmLoaded = await loadWasm();
+            if (!wasmLoaded) return;
+            
+            document.getElementById('loading-state').style.display = 'none';
+            document.getElementById('app-content').style.display = 'block';
+
+            // 3. Load data from Firestore
+            let initialStateJson;
+            try {
+                const docSnap = await getDoc(playerDocRef);
+                if (docSnap.exists()) {
+                    console.log("Loading existing data from Firebase...");
+                    const loadedData = docSnap.data();
+                    // Pass the raw JS object (as a string) to Go to be unmarshaled
+                    // Go's unmarshaler is safer with nil checks, etc.
+                    initialStateJson = window.go_loadPlayerData(JSON.stringify(loadedData));
+                } else {
+                    console.log("No data found, creating new player state...");
+                    initialStateJson = window.go_getPlayerData();
+                }
+            } catch (err) {
+                console.error("Error loading doc, creating new state:", err);
+                initialStateJson = window.go_getPlayerData();
+            }
+
+            // 4. Run archival check on load
+            // We call this *after* loading but *before* the first render
+            const archivedStateJson = window.go_archiveInactiveProjects();
+            globalPlayerState = JSON.parse(archivedStateJson);
+
+            // 5. First Render
+            renderUI(globalPlayerState);
+            
+            // 6. Save initial/archived state (in case it changed)
+            await debouncedSave(globalPlayerState);
+
+            // 7. Register Global Event Handlers
+            document.getElementById('create-class-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const data = new FormData(e.target);
+                const name = data.get('name');
+                const color = data.get('color');
+                if (name && color) {
+                    await callGoLogic('go_createClass', name, color);
+                    e.target.reset();
+                    // Reset color picker to default
+                    e.target.querySelector('input[name="color"]').value = "#00ADD8";
+                }
+            });
+
+            document.getElementById('create-project-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const data = new FormData(e.target);
+                const name = data.get('name');
+                if (name) {
+                    await callGoLogic('go_createProject', name);
+                    e.target.reset();
+                }
+            });
+
+            // Event delegation for dynamic content
+            document.getElementById('app-content').addEventListener('submit', async (e) => {
+                if (e.target.classList.contains('add-quest-form')) {
+                    e.preventDefault();
+                    const data = new FormData(e.target);
+                    const projectId = e.target.dataset.projectId;
+                    const classId = data.get('classId');
+                    const name = data.get('name');
+                    const hours = parseInt(data.get('hours'));
+
+                    if (projectId && classId && name && hours > 0) {
+                        await callGoLogic(
+                            'go_addQuestToProject', 
+                            projectId, 
+                            classId, 
+                            name, 
+                            hours
+                        );
+                        e.target.reset();
+                    } else {
+                        console.warn("Invalid quest form data");
+                    }
+                }
+            });
+
+            document.getElementById('app-content').addEventListener('change', async (e) => {
+                if (e.target.classList.contains('complete-quest-btn')) {
+                    e.target.disabled = true; // Prevent double-clicks
+                    const projectId = e.target.dataset.projectId;
+                    const questId = e.target.dataset.questId;
+                    if (projectId && questId) {
+                        await callGoLogic('go_completeQuest', projectId, questId);
+                    }
+                    // No need to remove element, renderUI will handle it
                 }
             });
         }
 
-        // --- WASM INITIALIZATION ---
-        async function initWasm() {
-            const go = new Go();
-            try {
-                const result = await WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject);
-                go.run(result.instance);
-            } catch (error) {
-                console.error("Error loading WASM:", error);
-                document.getElementById('loading-screen').innerHTML = '<p class="text-red-500 text-lg">Failed to load system. Check console.</p>';
-                return;
+        // --- Firebase Init & Auth ---
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            // setLogLevel('debug'); // Uncomment for Firestore debugging
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    console.log("User is signed in:", user.uid);
+                    userId = user.uid;
+                    // Ensure WASM logic only runs once
+                    if (!globalPlayerState) {
+                        mainAppLogic(); // This is the entry point
+                    }
+                } else {
+                    console.log("User is not signed in, attempting anonymous auth.");
+                }
+            });
+
+            // Sign in
+            if (initialAuthToken) {
+                console.log("Signing in with custom token...");
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else if (!auth.currentUser) {
+                console.log("Signing in anonymously...");
+                await signInAnonymously(auth);
             }
 
-            const docRef = doc(db, "users", userId);
-            const docSnap = await getDoc(docRef);
-
-            let initialPlayerData;
-            if (docSnap.exists()) {
-                console.log("Found Firestore data. Loading...");
-                initialPlayerData = JSON.parse(loadPlayerData(JSON.stringify(docSnap.data())));
-            } else {
-                console.log("No Firestore data found. Initializing new player.");
-                initialPlayerData = JSON.parse(getPlayerData());
-            }
-            
-            updateUI(initialPlayerData);
-            
-            document.getElementById('loading-screen').style.display = 'none';
-            document.getElementById('app-content').classList.remove('opacity-0');
+        } catch (err) {
+            console.error("Firebase Init Error:", err);
+            document.getElementById('loading-state').innerText = "Error connecting to application services. Please refresh.";
         }
-
-        // --- UI & DATA FUNCTIONS ---
-        window.updateUI = function(playerData) {
-            if (!playerData) return;
-            // Update stats
-            document.getElementById('player-level').textContent = playerData.level;
-            document.getElementById('player-xp-text').textContent = `${playerData.xp} / ${playerData.xpToNextLevel}`;
-            document.getElementById('player-xp-bar').style.width = `${Math.min((playerData.xp / playerData.xpToNextLevel) * 100, 100)}%`;
-            document.getElementById('player-strength').textContent = playerData.strength;
-            document.getElementById('player-intelligence').textContent = playerData.intelligence;
-            document.getElementById('player-dexterity').textContent = playerData.dexterity;
-
-            // Update habits list
-            const habitsList = document.getElementById('habits-list');
-            habitsList.innerHTML = '';
-            if (playerData.habits && playerData.habits.length > 0) {
-                 playerData.habits.forEach((habit, index) => {
-                    const habitElement = document.createElement('div');
-                    habitElement.className = 'bg-gray-800 p-4 rounded-lg flex justify-between items-center shadow';
-                    habitElement.innerHTML = `
-                        <div>
-                            <p class="font-medium">${habit.name}</p>
-                            <p class="text-sm text-green-400">+${habit.xpValue} XP</p>
-                        </div>
-                        <button data-index="${index}" class="complete-btn bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors flex-shrink-0 ml-2">Complete</button>
-                    `;
-                    habitsList.appendChild(habitElement);
-                });
-            } else {
-                 habitsList.innerHTML = '<p class="text-gray-500 text-center py-4">No active habits. Add one to begin your journey!</p>';
-            }
-
-            // --- UPDATED: History Log Logic ---
-            const historyLog = document.getElementById('history-log');
-            historyLog.innerHTML = ''; // Clear old log
-            if (playerData.history && playerData.history.length > 0) {
-                playerData.history.forEach(entry => {
-                    const logEntry = document.createElement('div');
-                    logEntry.className = 'bg-gray-800 p-3 rounded-lg flex justify-between items-center text-sm';
-                    logEntry.innerHTML = `
-                        <p>${entry.name}</p>
-                        <p class="text-gray-400">${entry.completedAt}</p>
-                    `;
-                    historyLog.appendChild(logEntry);
-                });
-            } else {
-                // Show an empty state message if no history exists
-                historyLog.innerHTML = '<p class="text-gray-500 text-center py-4">You have no completed habits yet.</p>';
-            }
-            
-            saveStateToFirestore(playerData);
-        }
-        
-        async function saveStateToFirestore(playerData) {
-            if (!userId) {
-                console.error("Cannot save state: No user ID.");
-                return;
-            }
-            try {
-                await setDoc(doc(db, "users", userId), playerData);
-            } catch (e) {
-                console.error("Error saving to Firestore: ", e);
-            }
-        }
-
-        // --- EVENT LISTENERS ---
-        document.getElementById('add-habit-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const input = document.getElementById('habit-input');
-            const habitName = input.value.trim();
-            if (habitName) {
-                const updatedPlayerData = JSON.parse(addHabit(habitName));
-                window.updateUI(updatedPlayerData);
-                input.value = '';
-            }
-        });
-
-        document.getElementById('habits-list').addEventListener('click', (e) => {
-            if (e.target && e.target.classList.contains('complete-btn')) {
-                const index = parseInt(e.target.getAttribute('data-index'), 10);
-                const updatedPlayerData = JSON.parse(completeHabit(index));
-                window.updateUI(updatedPlayerData);
-            }
-        });
-
-        document.getElementById('toggle-history-btn').addEventListener('click', () => {
-            const historyLog = document.getElementById('history-log');
-            const btn = document.getElementById('toggle-history-btn');
-            historyLog.classList.toggle('hidden');
-            if (historyLog.classList.contains('hidden')) {
-                btn.textContent = 'Show History';
-            } else {
-                btn.textContent = 'Hide History';
-            }
-        });
-
-        // Start the application
-        main();
     </script>
-    
-    <!-- App Content -->
-    <div id="loading-screen" class="fixed inset-0 bg-gray-900 flex flex-col items-center justify-center z-50">
-        <svg class="animate-spin h-10 w-10 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-        <p class="mt-4 text-lg">Authenticating & Loading System...</p>
+    <style>
+        /* Custom form styles to work with Tailwind */
+        .form-input, .form-select, .form-checkbox {
+            @apply block w-full bg-gray-700 border-gray-600 text-white rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500;
+        }
+        .form-checkbox {
+            @apply h-5 w-5 rounded bg-gray-900 border-gray-700 text-indigo-600 focus:ring-indigo-500;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans antialiased">
+
+    <div id="loading-state" class="flex items-center justify-center min-h-screen">
+        <p class="text-lg text-gray-400">Loading Aura Engine...</p>
     </div>
-    <div id="app-content" class="max-w-4xl mx-auto opacity-0 transition-opacity duration-500">
-        <header class="text-center mb-8">
-            <h1 class="text-3xl sm:text-4xl font-bold text-blue-400 tracking-wider">Solo Leveling System</h1>
-            <p class="text-gray-400 mt-2">Complete your habits, gain XP, and level up your life.</p>
+
+    <div id="app-content" class="container mx-auto p-4 md:p-8 max-w-4xl" style="display: none;">
+        
+        <header class="mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">Aura</h1>
+            <p class="text-lg text-gray-400">Professional Effort & Mastery Tracker</p>
         </header>
 
-        <section class="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
-            <h2 class="text-2xl font-semibold mb-4 border-b border-gray-700 pb-2">Player Status</h2>
-            <div class="flex flex-col sm:flex-row gap-4">
-                <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">LEVEL</p><p id="player-level" class="text-2xl font-bold">1</p></div>
-                <div class="flex-grow bg-gray-700 p-4 rounded-lg">
-                    <div class="flex justify-between items-center mb-1"><p class="text-sm text-gray-400">EXPERIENCE</p><p id="player-xp-text" class="text-sm font-medium">0 / 100</p></div>
-                    <div class="w-full progress-bar-container rounded-full h-4"><div id="player-xp-bar" class="progress-bar h-4 rounded-full" style="width: 0%"></div></div>
-                </div>
-            </div>
-            <div class="grid grid-cols-3 gap-4 mt-4">
-                <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">STR</p><p id="player-strength" class="text-2xl font-bold">1</p></div>
-                <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">INT</p><p id="player-intelligence" class="text-2xl font-bold">1</p></div>
-                <div class="bg-gray-700 p-4 rounded-lg text-center"><p class="text-sm text-gray-400">DEX</p><p id="player-dexterity" class="text-2xl font-bold">1</p></div>
+        <!-- Global Creation Forms -->
+        <section class="mb-8 p-4 bg-gray-800 rounded-lg shadow-lg">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Create Class -->
+                <form id="create-class-form">
+                    <label class="block text-sm font-medium text-gray-300 mb-1">Create New Class</label>
+                    <div class="flex space-x-2">
+                        <input type="text" name="name" class="form-input" placeholder="e.g., Go Developer" required>
+                        <input type="color" name="color" class="form-input w-16" value="#00ADD8" required>
+                        <button type="submit" class="px-3 py-2 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900">Create</button>
+                    </div>
+                </form>
+                <!-- Create Project -->
+                <form id="create-project-form">
+                    <label class="block text-sm font-medium text-gray-300 mb-1">Create New Project</label>
+                    <div class="flex space-x-2">
+                        <input type="text" name="name" class="form-input" placeholder="e.g., API Refactor" required>
+                        <button type="submit" class="px-3 py-2 bg-green-600 text-white font-semibold rounded-md shadow-sm hover:bg-green-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-gray-900">Create</Button>
+                    </div>
+                </form>
             </div>
         </section>
 
+        <!-- Classes Overview -->
+        <section class="mb-8">
+            <h2 class="text-2xl font-semibold text-white mb-4">Classes</h2>
+            <div id="classes-list" class="space-y-3">
+                <!-- Classes will be rendered here by JS -->
+            </div>
+        </section>
+
+        <!-- Projects List -->
         <section>
-            <h2 class="text-2xl font-semibold mb-4">Habit Quest Log</h2>
-            <form id="add-habit-form" class="flex flex-col sm:flex-row gap-2 mb-4">
-                <input type="text" id="habit-input" placeholder="Enter a new habit..." class="w-full flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
-                <button type="submit" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Add</button>
-            </form>
-            <div id="habits-list" class="space-y-3"></div>
+            <h2 class="text-2xl font-semibold text-white mb-4">Active Projects</h2>
+            <div id="projects-list" class="space-y-6">
+                <!-- Projects will be rendered here by JS -->
+            </div>
         </section>
 
-        <!-- UPDATED: History Log Section -->
-        <section class="mt-8">
-            <div class="text-center">
-                 <!-- Button is no longer hidden by default -->
-                 <button id="toggle-history-btn" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold px-6 py-2 rounded-lg transition-colors">Show History</button>
-            </div>
-            <div id="history-log" class="hidden space-y-2 mt-4 max-h-80 overflow-y-auto">
-                <!-- History entries will be dynamically inserted here -->
-            </div>
-        </section>
     </div>
+
 </body>
 </html>
 
